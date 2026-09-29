@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, use } from "react";
+import Link from "next/link";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import RequireAuth from "@/components/RequireAuth";
 import { useAuth } from "@/lib/AuthProvider";
@@ -41,11 +42,43 @@ function RatingTags({ umpire }) {
   return <div className="text-xs text-neutral-500">{tags.join(" · ")}</div>;
 }
 
+// Callout: this umpire's OTHER confirmations the same date. Same-site ones are
+// normal (e.g. two games at one stadium) but are shown so every assignor sees
+// the double-up; anything confirmed by a DIFFERENT assignor is highlighted.
+function CommitmentTags({ items, meId }) {
+  if (!items || !items.length) return null;
+  return (
+    <div className="mt-1 space-y-1">
+      {items.map((x) => {
+        const byOther = x.confirmed_by_id && x.confirmed_by_id !== meId;
+        const cls = !x.same_site
+          ? "border-red-200 bg-red-50 text-red-700"
+          : byOther
+          ? "border-amber-300 bg-amber-50 text-amber-800"
+          : "border-neutral-200 bg-neutral-50 text-neutral-600";
+        return (
+          <div key={x.other_game_id} className={`text-xs border rounded px-2 py-1 ${cls}`}>
+            Also confirmed:{" "}
+            <Link href={`/games/${x.other_game_id}`} className="underline">
+              {x.home} vs {x.visitor}
+            </Link>{" "}
+            · {x.game_time || "TBD"} ·{" "}
+            {x.same_site ? "same site" : `different site (${x.location})`} · by{" "}
+            {x.confirmed_by_name || "?"}
+            {byOther && " — another assignor, please coordinate"}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function GameDetailContent({ gameId }) {
   const { person } = useAuth();
   const [game, setGame] = useState(null);
   const [potentials, setPotentials] = useState([]);
   const [confirmations, setConfirmations] = useState([]);
+  const [commitments, setCommitments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
   const [newPotentialName, setNewPotentialName] = useState("");
@@ -65,7 +98,12 @@ function GameDetailContent({ gameId }) {
     setErrorMsg("");
     const supabase = getSupabaseClient();
 
-    const [{ data: gameData, error: gameErr }, { data: potentialsData }, { data: confirmData }] =
+    const [
+      { data: gameData, error: gameErr },
+      { data: potentialsData },
+      { data: confirmData },
+      { data: commitmentsData },
+    ] =
       await Promise.all([
         supabase.from("games").select("*").eq("id", gameId).single(),
         supabase
@@ -84,12 +122,16 @@ function GameDetailContent({ gameId }) {
           )
           .eq("game_id", gameId)
           .eq("active", true),
+        // Other same-date confirmations for these umpires (returns nothing, harmlessly,
+        // if the database function has not been created yet).
+        supabase.rpc("same_date_umpire_commitments", { p_game_id: gameId }),
       ]);
 
     if (gameErr) setErrorMsg(gameErr.message);
     setGame(gameData || null);
     setPotentials(potentialsData || []);
     setConfirmations(confirmData || []);
+    setCommitments(commitmentsData || []);
     setLoading(false);
   }, [gameId]);
 
@@ -211,6 +253,10 @@ function GameDetailContent({ gameId }) {
                     <div className="text-xs text-neutral-500">
                       by {c.people?.full_name || "?"}
                     </div>
+                    <CommitmentTags
+                      items={commitments.filter((x) => x.umpire_id === c.umpire_id)}
+                      meId={person?.id}
+                    />
                     {c.is_emergency_override && (
                       <div className="text-xs text-amber-700 mt-1">
                         Emergency override: {c.override_reason}
@@ -270,6 +316,10 @@ function GameDetailContent({ gameId }) {
                   )}
                 </div>
                 <RatingTags umpire={p.umpires} />
+                <CommitmentTags
+                  items={commitments.filter((x) => x.umpire_id === p.umpire_id)}
+                  meId={person?.id}
+                />
                 <div className="text-xs text-neutral-500">
                   {p.system_suggested ? "auto-suggested" : `added by ${p.people?.full_name || "?"}`}
                 </div>
