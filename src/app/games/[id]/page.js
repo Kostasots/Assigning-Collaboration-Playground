@@ -4,32 +4,8 @@ import { useEffect, useState, useCallback, use } from "react";
 import Link from "next/link";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import RequireAuth from "@/components/RequireAuth";
+import UmpirePicker from "@/components/UmpirePicker";
 import { useAuth } from "@/lib/AuthProvider";
-
-// Looks up an umpire by exact (case-insensitive) name match against the
-// canonical name or any alias; creates a new umpire row if nothing matches.
-// This intentionally does fuzzy-free exact matching only — same philosophy
-// as the Apps Script / CSV-checker versions: accuracy grows as the roster
-// of aliases grows, rather than guessing.
-async function resolveOrCreateUmpire(supabase, rawName) {
-  const name = rawName.trim();
-  if (!name) return null;
-  const { data: existing } = await supabase
-    .from("umpires")
-    .select("id, canonical_name")
-    .or(`canonical_name.ilike.${name},aliases.cs.{${name}}`)
-    .limit(1)
-    .maybeSingle();
-  if (existing) return existing.id;
-
-  const { data: created, error } = await supabase
-    .from("umpires")
-    .insert({ canonical_name: name })
-    .select("id")
-    .single();
-  if (error) throw error;
-  return created.id;
-}
 
 // Renders whatever rating info exists for an umpire ("" if neither is set)
 // right next to their name, so assignors see level at decision time.
@@ -81,7 +57,8 @@ function GameDetailContent({ gameId }) {
   const [commitments, setCommitments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
-  const [newPotentialName, setNewPotentialName] = useState("");
+  const [roster, setRoster] = useState([]);
+  const [pickedUmpireId, setPickedUmpireId] = useState(null);
   const [busy, setBusy] = useState(false);
 
   // Emergency override modal state
@@ -90,7 +67,7 @@ function GameDetailContent({ gameId }) {
 
   // Emergency fill-in (umpire not in potentials at all) form state
   const [fillInSlot, setFillInSlot] = useState(null); // 1 | 2 | null
-  const [fillInName, setFillInName] = useState("");
+  const [fillInUmpireId, setFillInUmpireId] = useState(null);
   const [fillInReason, setFillInReason] = useState("");
 
   const load = useCallback(async () => {
@@ -103,6 +80,7 @@ function GameDetailContent({ gameId }) {
       { data: potentialsData },
       { data: confirmData },
       { data: commitmentsData },
+      { data: rosterData },
     ] =
       await Promise.all([
         supabase.from("games").select("*").eq("id", gameId).single(),
@@ -125,6 +103,10 @@ function GameDetailContent({ gameId }) {
         // Other same-date confirmations for these umpires (returns nothing, harmlessly,
         // if the database function has not been created yet).
         supabase.rpc("same_date_umpire_commitments", { p_game_id: gameId }),
+        supabase
+          .from("umpires")
+          .select("id, canonical_name, aliases, usafh_rating, internal_rating")
+          .order("canonical_name"),
       ]);
 
     if (gameErr) setErrorMsg(gameErr.message);
@@ -132,6 +114,7 @@ function GameDetailContent({ gameId }) {
     setPotentials(potentialsData || []);
     setConfirmations(confirmData || []);
     setCommitments(commitmentsData || []);
+    setRoster(rosterData || []);
     setLoading(false);
   }, [gameId]);
 
@@ -142,17 +125,16 @@ function GameDetailContent({ gameId }) {
 
   async function handleAddPotential(e) {
     e.preventDefault();
-    if (!newPotentialName.trim()) return;
+    if (!pickedUmpireId) return;
     setBusy(true);
     setErrorMsg("");
     try {
       const supabase = getSupabaseClient();
-      const umpireId = await resolveOrCreateUmpire(supabase, newPotentialName);
       const { error } = await supabase
         .from("potentials")
-        .insert({ game_id: gameId, umpire_id: umpireId, added_by: person.id });
+        .insert({ game_id: gameId, umpire_id: pickedUmpireId, added_by: person.id });
       if (error && error.code !== "23505") throw error; // ignore duplicate (already a potential)
-      setNewPotentialName("");
+      setPickedUmpireId(null);
       await load();
     } catch (err) {
       setErrorMsg(err.message);
@@ -177,17 +159,19 @@ function GameDetailContent({ gameId }) {
       setOverrideFor(null);
       setOverrideReason("");
       setFillInSlot(null);
-      setFillInName("");
+      setFillInUmpireId(null);
       setFillInReason("");
       await load();
     } catch (err) {
-      if (!isEmergency) {
-        // The RPC blocked it — offer the override path instead of just erroring out.
-        const potential = potentials.find((p) => p.umpire_id === umpireId);
+      // Only rule blocks (same-date conflict, not in Potentials) offer the override.
+      // Anything else (no matching person record, a bad slot, ...) is just shown as an error.
+      const isRuleBlock = /emergency override/i.test(err.message || "");
+      if (!isEmergency && isRuleBlock) {
+        const rosterEntry = roster.find((u) => u.id === umpireId);
         setOverrideFor({
           slot,
           umpireId,
-          umpireName: potential?.umpires?.canonical_name || "this umpire",
+          umpireName: rosterEntry?.canonical_name || "this umpire",
           reasonHint: err.message,
         });
       } else {
@@ -200,17 +184,8 @@ function GameDetailContent({ gameId }) {
 
   async function handleFillInSubmit(e) {
     e.preventDefault();
-    if (!fillInName.trim() || !fillInReason.trim()) return;
-    setBusy(true);
-    setErrorMsg("");
-    try {
-      const supabase = getSupabaseClient();
-      const umpireId = await resolveOrCreateUmpire(supabase, fillInName);
-      await tryConfirm(fillInSlot, umpireId, true, fillInReason);
-    } catch (err) {
-      setErrorMsg(err.message);
-      setBusy(false);
-    }
+    if (!fillInUmpireId || !fillInReason.trim()) return;
+    await tryConfirm(fillInSlot, fillInUmpireId, true, fillInReason);
   }
 
   if (loading) return <p className="p-6 text-sm text-neutral-500">Loading…</p>;
@@ -280,16 +255,15 @@ function GameDetailContent({ gameId }) {
         </p>
 
         <form onSubmit={handleAddPotential} className="flex gap-2 mb-4">
-          <input
-            type="text"
-            placeholder="Umpire name"
-            value={newPotentialName}
-            onChange={(e) => setNewPotentialName(e.target.value)}
-            className="flex-1 rounded-md border border-neutral-300 px-3 py-1.5 text-sm"
+          <UmpirePicker
+            umpires={roster}
+            value={pickedUmpireId}
+            onChange={setPickedUmpireId}
+            excludeIds={potentials.map((p) => p.umpire_id)}
           />
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || !pickedUmpireId}
             className="rounded-md bg-neutral-900 text-white text-sm px-3 py-1.5 disabled:opacity-50"
           >
             Add
@@ -363,14 +337,14 @@ function GameDetailContent({ gameId }) {
                 </label>
               ))}
             </div>
-            <input
-              type="text"
-              placeholder="Umpire name"
-              value={fillInName}
-              onChange={(e) => setFillInName(e.target.value)}
-              required
-              className="w-full rounded-md border border-neutral-300 px-3 py-1.5 text-sm"
-            />
+            <div className="flex">
+              <UmpirePicker
+                umpires={roster}
+                value={fillInUmpireId}
+                onChange={setFillInUmpireId}
+                placeholder="Search the roster…"
+              />
+            </div>
             <input
               type="text"
               placeholder="Reason (required — this gets logged)"
@@ -381,7 +355,7 @@ function GameDetailContent({ gameId }) {
             />
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || !fillInUmpireId || !fillInReason.trim()}
               className="rounded-md bg-amber-600 text-white text-sm px-3 py-1.5 disabled:opacity-50"
             >
               Confirm as emergency fill-in
