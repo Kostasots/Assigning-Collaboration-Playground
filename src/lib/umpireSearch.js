@@ -6,12 +6,15 @@
 // only the Maisano whose first name starts with F, and a nickname such as
 // "shrek" finds the umpire it is saved as an alias for.
 
+// Hyphens split words (so "bulk" finds Kithcart-Bulk); apostrophes are dropped
+// (so "obrien" finds O'Brien); accents and case are ignored.
 export const normalizeText = (s) =>
   (s || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9\s'-]/g, " ")
+    .replace(/['\u2019]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -30,7 +33,11 @@ export function matchUmpires(umpires, query, { excludeIds = [], limit = 8 } = {}
       const full = normalizeText(cand);
       const words = full.split(" ");
       if (!tokens.every((t) => words.some((w) => w.startsWith(t)))) return;
-      const score = (full === q ? 0 : full.startsWith(q) ? 1 : 2) + (idx === 0 ? 0 : 0.5);
+      // Surname matches rank first: schedules almost always use last names, so "kim"
+      // should list the Kims before anyone whose first name is Kim.
+      const surnameHit = tokens.some((t) => words[words.length - 1].startsWith(t));
+      const score =
+        (surnameHit ? 0 : 3) + (full === q ? 0 : full.startsWith(q) ? 1 : 2) + (idx === 0 ? 0 : 0.5);
       if (!best || score < best.score) best = { score, viaAlias: idx > 0 ? cand : null };
     });
     if (best) results.push({ umpire: u, score: best.score, viaAlias: best.viaAlias });
