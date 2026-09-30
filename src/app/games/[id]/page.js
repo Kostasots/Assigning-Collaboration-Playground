@@ -5,6 +5,9 @@ import Link from "next/link";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import RequireAuth from "@/components/RequireAuth";
 import UmpirePicker from "@/components/UmpirePicker";
+import AddUmpireForm from "@/components/AddUmpireForm";
+import Modal from "@/components/Modal";
+import { addUmpire } from "@/lib/umpireApi";
 import { useAuth } from "@/lib/AuthProvider";
 
 // Renders whatever rating info exists for an umpire ("" if neither is set)
@@ -59,6 +62,7 @@ function GameDetailContent({ gameId }) {
   const [errorMsg, setErrorMsg] = useState("");
   const [roster, setRoster] = useState([]);
   const [pickedUmpireId, setPickedUmpireId] = useState(null);
+  const [addingFor, setAddingFor] = useState(null); // { target: "potential" | "fillin", query }
   const [busy, setBusy] = useState(false);
 
   // Emergency override modal state
@@ -122,6 +126,15 @@ function GameDetailContent({ gameId }) {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- standard fetch-on-mount; load() guards its own state
     load();
   }, [load]);
+
+  // Re-read just the roster (after someone is added from the picker)
+  async function loadRoster() {
+    const { data } = await getSupabaseClient()
+      .from("umpires")
+      .select("id, canonical_name, aliases, usafh_rating, internal_rating")
+      .order("canonical_name");
+    setRoster(data || []);
+  }
 
   async function handleAddPotential(e) {
     e.preventDefault();
@@ -260,6 +273,7 @@ function GameDetailContent({ gameId }) {
             value={pickedUmpireId}
             onChange={setPickedUmpireId}
             excludeIds={potentials.map((p) => p.umpire_id)}
+            onAddNew={(q) => setAddingFor({ target: "potential", query: q })}
           />
           <button
             type="submit"
@@ -342,6 +356,7 @@ function GameDetailContent({ gameId }) {
                 umpires={roster}
                 value={fillInUmpireId}
                 onChange={setFillInUmpireId}
+                onAddNew={(q) => setAddingFor({ target: "fillin", query: q })}
                 placeholder="Search the roster…"
               />
             </div>
@@ -402,6 +417,23 @@ function GameDetailContent({ gameId }) {
             </div>
           </div>
         </div>
+      )}
+
+      {addingFor && (
+        <Modal title="Add a new umpire" onClose={() => setAddingFor(null)}>
+          <AddUmpireForm
+            roster={roster}
+            initialQuery={addingFor.query}
+            onSubmit={addUmpire}
+            onCancel={() => setAddingFor(null)}
+            onDone={async (row) => {
+              await loadRoster();
+              if (addingFor.target === "potential") setPickedUmpireId(row.id);
+              else setFillInUmpireId(row.id);
+              setAddingFor(null);
+            }}
+          />
+        </Modal>
       )}
     </main>
   );

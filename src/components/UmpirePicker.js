@@ -10,6 +10,7 @@ export default function UmpirePicker({
   value,
   onChange,
   excludeIds = [],
+  onAddNew,
   placeholder = "Search the roster…",
 }) {
   const [query, setQuery] = useState("");
@@ -86,8 +87,8 @@ export default function UmpirePicker({
         <ul id={listId} className="absolute z-10 mt-1 w-full max-h-64 overflow-auto rounded-md border border-neutral-200 bg-white shadow-md text-sm">
           {results.length === 0 ? (
             <li className="px-3 py-2 text-neutral-500">
-              No one on the roster matches &ldquo;{query.trim()}&rdquo;. Check the spelling, or ask
-              an admin to add them.
+              No one on the roster matches &ldquo;{query.trim()}&rdquo;.
+              {!onAddNew && " Check the spelling, or ask an admin to add them."}
             </li>
           ) : (
             results.map((r, i) => (
@@ -120,6 +121,21 @@ export default function UmpirePicker({
                 </button>
               </li>
             ))
+          )}
+          {onAddNew && (
+            <li>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                  onAddNew(query.trim());
+                }}
+                className="w-full text-left px-3 py-2 text-sm text-neutral-700 border-t border-neutral-100 hover:bg-neutral-50"
+              >
+                + Add &ldquo;{query.trim()}&rdquo; as a new umpire…
+              </button>
+            </li>
           )}
         </ul>
       )}

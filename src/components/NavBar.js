@@ -17,6 +17,9 @@ export default function NavBar() {
             <Link href="/" className="text-neutral-600 hover:text-neutral-900">
               Games
             </Link>
+            <Link href="/umpires" className="text-neutral-600 hover:text-neutral-900">
+              Umpires
+            </Link>
             <Link href="/audit" className="text-neutral-600 hover:text-neutral-900">
               Audit log
             </Link>
